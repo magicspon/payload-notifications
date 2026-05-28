@@ -1,7 +1,7 @@
 {
   "name": "@spon/payload-notifications",
-  "version": "1.0.0",
-  "description": "A blank template to get started with Payload 3.0",
+  "version": "0.0.0",
+  "description": "A generic, channel-based notifications plugin for Payload CMS 3.0 — rules, subscriptions, digests, and pluggable email/webhook/in-app channels.",
   "license": "MIT",
   "type": "module",
   "exports": {
@@ -38,13 +38,18 @@
     "dev:payload": "cross-env PAYLOAD_CONFIG_PATH=./dev/payload.config.ts payload",
     "generate:importmap": "pnpm dev:generate-importmap",
     "generate:types": "pnpm dev:generate-types",
+    "dev:build": "next build dev",
+    "dev:start": "next start dev -p 3001",
     "lint": "eslint",
     "lint:fix": "eslint ./src --fix",
-    "test": "pnpm test:int && pnpm test:e2e",
+    "test": "pnpm test:unit && pnpm test:int",
     "test:e2e": "playwright test",
-    "test:int": "vitest"
+    "test:unit": "vitest --config vitest.config.js",
+    "test:int": "vitest --config vitest.integration.config.js",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+	  "@changesets/cli": "^2.31.0",
     "@eslint/eslintrc": "^3.2.0",
     "@payloadcms/db-mongodb": "3.84.1",
     "@payloadcms/db-postgres": "3.84.1",

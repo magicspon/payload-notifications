@@ -1,1 +1,2 @@
-export { BeforeDashboardServer } from '../components/BeforeDashboardServer.js'
+// RSC exports (React Server Components). Add server components here.
+export {}

@@ -1,113 +1,72 @@
-import type { CollectionSlug, Config } from 'payload'
+import type { Config } from 'payload'
 
-import { customEndpointHandler } from './endpoints/customEndpointHandler.js'
+import type { NotificationsPluginConfig } from './types.js'
 
-export type SponPayloadNotificationsConfig = {
-  /**
-   * List of collections to add a custom field
-   */
-  collections?: Partial<Record<CollectionSlug, true>>
-  disabled?: boolean
-}
+import { buildNotificationEventsCollection } from './collections/notificationEvents.js'
+import { buildNotificationInboxCollection } from './collections/notificationInbox.js'
+import { buildNotificationRulesCollection } from './collections/notificationRules.js'
+import { buildNotificationSubscriptionsCollection } from './collections/notificationSubscriptions.js'
+import { makeProcessNotificationEventTask } from './jobs/processNotificationEvent.js'
+import { makeSendNotificationDigestTask } from './jobs/sendNotificationDigest.js'
+import { mergeCollection } from './utils/mergeCollection.js'
 
-export const sponPayloadNotifications =
-  (pluginOptions: SponPayloadNotificationsConfig) =>
-  (config: Config): Config => {
-    if (!config.collections) {
-      config.collections = []
+export { makeEmailChannel } from './channels/makeEmailChannel.js'
+export { makeInboxChannel } from './channels/makeInboxChannel.js'
+export { makeWebhookChannel } from './channels/makeWebhookChannel.js'
+export type { ChannelDefinition, NotificationsPluginConfig, RenderedNotification, TriggerDefinition } from './types.js'
+export { evaluateFieldConditions } from './utils/evaluateFieldConditions.js'
+export { makeTriggers } from './utils/makeTriggers.js'
+export { queueNotificationRules } from './utils/queueNotificationRules.js'
+export { renderNotification } from './utils/renderNotification.js'
+
+export function notificationsPlugin(
+  options: NotificationsPluginConfig,
+): (config: Config) => Config {
+  return (incomingConfig: Config): Config => {
+    const config = { ...incomingConfig }
+
+    const slugs = {
+      events: options.slugs?.events ?? 'notification-events',
+      inbox: options.slugs?.inbox ?? 'notification-inbox',
+      rules: options.slugs?.rules ?? 'notification-rules',
+      subscriptions: options.slugs?.subscriptions ?? 'notification-subscriptions',
     }
 
-    config.collections.push({
-      slug: 'plugin-collection',
-      fields: [
-        {
-          name: 'id',
-          type: 'text',
-        },
-      ],
-    })
+    const overrides = options.collections ?? {}
 
-    if (pluginOptions.collections) {
-      for (const collectionSlug in pluginOptions.collections) {
-        const collection = config.collections.find(
-          (collection) => collection.slug === collectionSlug,
-        )
-
-        if (collection) {
-          collection.fields.push({
-            name: 'addedByPlugin',
-            type: 'text',
-            admin: {
-              position: 'sidebar',
-            },
-          })
-        }
-      }
-    }
-
-    /**
-     * If the plugin is disabled, we still want to keep added collections/fields so the database schema is consistent which is important for migrations.
-     * If your plugin heavily modifies the database schema, you may want to remove this property.
-     */
-    if (pluginOptions.disabled) {
-      return config
-    }
-
-    if (!config.endpoints) {
-      config.endpoints = []
-    }
-
-    if (!config.admin) {
-      config.admin = {}
-    }
-
-    if (!config.admin.components) {
-      config.admin.components = {}
-    }
-
-    if (!config.admin.components.beforeDashboard) {
-      config.admin.components.beforeDashboard = []
-    }
-
-    config.admin.components.beforeDashboard.push(
-      `@spon/payload-notifications/client#BeforeDashboardClient`,
+    const rulesCollection = mergeCollection(
+      buildNotificationRulesCollection(options, slugs.rules),
+      overrides.notificationRules,
     )
-    config.admin.components.beforeDashboard.push(
-      `@spon/payload-notifications/rsc#BeforeDashboardServer`,
+    const eventsCollection = mergeCollection(
+      buildNotificationEventsCollection(slugs.events, slugs.rules),
+      overrides.notificationEvents,
+    )
+    const inboxCollection = mergeCollection(
+      buildNotificationInboxCollection(slugs.inbox, slugs.events),
+      overrides.notificationInbox,
+    )
+    const subscriptionsCollection = mergeCollection(
+      buildNotificationSubscriptionsCollection(slugs.subscriptions, slugs.rules, options.channels),
+      overrides.notificationSubscriptions,
     )
 
-    config.endpoints.push({
-      handler: customEndpointHandler,
-      method: 'get',
-      path: '/my-plugin-endpoint',
-    })
+    if (!config.collections) {config.collections = []}
+    config.collections.push(rulesCollection, eventsCollection, inboxCollection, subscriptionsCollection)
 
-    const incomingOnInit = config.onInit
+    if (options.disabled) {return config}
 
-    config.onInit = async (payload) => {
-      // Ensure we are executing any existing onInit functions before running our own.
-      if (incomingOnInit) {
-        await incomingOnInit(payload)
-      }
-
-      const { totalDocs } = await payload.count({
-        collection: 'plugin-collection',
-        where: {
-          id: {
-            equals: 'seeded-by-plugin',
-          },
-        },
-      })
-
-      if (totalDocs === 0) {
-        await payload.create({
-          collection: 'plugin-collection',
-          data: {
-            id: 'seeded-by-plugin',
-          },
-        })
-      }
+    if (!config.jobs) {
+      config.jobs = { tasks: [] }
+    } else if (!config.jobs.tasks) {
+      config.jobs.tasks = []
     }
+
+    ;(config.jobs.tasks as unknown[]).push(
+      makeProcessNotificationEventTask(options.channels, slugs),
+      makeSendNotificationDigestTask(options.channels, slugs),
+    )
 
     return config
   }
+}

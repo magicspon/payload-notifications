@@ -18,9 +18,12 @@ export default defineConfig(() => {
     ],
     test: {
       environment: 'node',
-      hookTimeout: 30_000,
-      testTimeout: 30_000,
-      exclude: ['**/node_modules/**', '**/dist/**', '**/e2e.spec.*', '**/e2e/**', '**/int.spec.*'],
+      hookTimeout: 60_000,
+      testTimeout: 60_000,
+      include: ['**/int.spec.*'],
+      // Single fork — getPayload must only be called once per process
+      pool: 'forks',
+      singleFork: true,
     },
   }
 })

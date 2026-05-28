@@ -1,9 +1,8 @@
-import { mongooseAdapter } from '@payloadcms/db-mongodb'
+import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
-import { MongoMemoryReplSet } from 'mongodb-memory-server'
+import { makeEmailChannel, makeInboxChannel, makeTriggers, makeWebhookChannel, notificationsPlugin } from '@spon/payload-notifications'
 import path from 'path'
 import { buildConfig } from 'payload'
-import { sponPayloadNotifications } from '@spon/payload-notifications'
 import sharp from 'sharp'
 import { fileURLToPath } from 'url'
 
@@ -17,59 +16,58 @@ if (!process.env.ROOT_DIR) {
   process.env.ROOT_DIR = dirname
 }
 
-const buildConfigWithMemoryDB = async () => {
-  if (process.env.NODE_ENV === 'test') {
-    const memoryDB = await MongoMemoryReplSet.create({
-      replSet: {
-        count: 3,
-        dbName: 'payloadmemory',
-      },
-    })
-
-    process.env.DATABASE_URL = `${memoryDB.getUri()}&retryWrites=true`
-  }
-
-  return buildConfig({
-    admin: {
-      importMap: {
-        baseDir: path.resolve(dirname),
+export default buildConfig({
+  admin: {
+    importMap: {
+      baseDir: path.resolve(dirname),
+    },
+  },
+  collections: [
+    {
+      slug: 'posts',
+      fields: [
+        { name: 'title', type: 'text' },
+        { name: 'status', type: 'text' },
+      ],
+    },
+    {
+      slug: 'media',
+      fields: [],
+      upload: {
+        staticDir: path.resolve(dirname, 'media'),
       },
     },
-    collections: [
-      {
-        slug: 'posts',
-        fields: [],
-      },
-      {
-        slug: 'media',
-        fields: [],
-        upload: {
-          staticDir: path.resolve(dirname, 'media'),
-        },
-      },
-    ],
-    db: mongooseAdapter({
-      ensureIndexes: true,
-      url: process.env.DATABASE_URL || '',
+  ],
+  db: sqliteAdapter({
+    client: {
+      url: process.env.DATABASE_URL ?? 'file:./dev.db',
+    },
+  }),
+  editor: lexicalEditor(),
+  email: testEmailAdapter,
+  onInit: async (payload) => {
+    await seed(payload)
+  },
+  plugins: [
+    notificationsPlugin({
+      channels: [
+        makeEmailChannel(({ subject, to }) => {
+          // In dev, log emails to the Payload logger via onInit instead of sending
+          void Promise.resolve(`email → ${to}: ${subject}`)
+          return Promise.resolve()
+        }),
+        makeInboxChannel(),
+        makeWebhookChannel(),
+      ],
+      triggers: [
+        ...makeTriggers('posts'),
+        { label: 'Custom Event', value: 'custom.event' },
+      ],
     }),
-    editor: lexicalEditor(),
-    email: testEmailAdapter,
-    onInit: async (payload) => {
-      await seed(payload)
-    },
-    plugins: [
-      sponPayloadNotifications({
-        collections: {
-          posts: true,
-        },
-      }),
-    ],
-    secret: process.env.PAYLOAD_SECRET || 'test-secret_key',
-    sharp,
-    typescript: {
-      outputFile: path.resolve(dirname, 'payload-types.ts'),
-    },
-  })
-}
-
-export default buildConfigWithMemoryDB()
+  ],
+  secret: process.env.PAYLOAD_SECRET || 'test-secret_key',
+  sharp,
+  typescript: {
+    outputFile: path.resolve(dirname, 'payload-types.ts'),
+  },
+})

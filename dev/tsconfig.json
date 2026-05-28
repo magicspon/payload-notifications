@@ -19,13 +19,13 @@
       "@payload-config": [
         "./payload.config.ts"
       ],
-      "spon-payload-notifications": [
+      "@spon/payload-notifications": [
         "../src/index.ts"
       ],
-      "spon-payload-notifications/client": [
+      "@spon/payload-notifications/client": [
         "../src/exports/client.ts"
       ],
-      "spon-payload-notifications/rsc": [
+      "@spon/payload-notifications/rsc": [
         "../src/exports/rsc.ts"
       ]
     },

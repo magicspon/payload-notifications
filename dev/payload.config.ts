@@ -3,7 +3,7 @@ import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import { MongoMemoryReplSet } from 'mongodb-memory-server'
 import path from 'path'
 import { buildConfig } from 'payload'
-import { sponPayloadNotifications } from 'spon-payload-notifications'
+import { sponPayloadNotifications } from '@spon/payload-notifications'
 import sharp from 'sharp'
 import { fileURLToPath } from 'url'
 

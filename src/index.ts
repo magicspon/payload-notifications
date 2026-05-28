@@ -70,10 +70,10 @@ export const sponPayloadNotifications =
     }
 
     config.admin.components.beforeDashboard.push(
-      `spon-payload-notifications/client#BeforeDashboardClient`,
+      `@spon/payload-notifications/client#BeforeDashboardClient`,
     )
     config.admin.components.beforeDashboard.push(
-      `spon-payload-notifications/rsc#BeforeDashboardServer`,
+      `@spon/payload-notifications/rsc#BeforeDashboardServer`,
     )
 
     config.endpoints.push({

@@ -1,3 +1,10 @@
+// fallow-ignore-file security-sink
+// The two fetch() calls below post to operator/subscriber-configured webhook
+// URLs — that is the channel's entire purpose. Both destinations are routed
+// through resolveUrl(), which rejects non-http(s) schemes and (unless
+// allowPrivateHosts is set) private/localhost/link-local hosts via isPrivateHost
+// as SSRF defence-in-depth. Reviewed: the non-literal-URL candidates are
+// intended behaviour, not an unguarded sink.
 import type { ChannelDefinition } from '../types.js'
 
 export type WebhookChannelOptions = {

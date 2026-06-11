@@ -1,9 +1,17 @@
-import type { TaskConfig } from 'payload'
+import type { Payload, PayloadRequest, TaskConfig } from 'payload'
 
-import type { ChannelDefinition, NotificationRuleShape, ResolvedSlugs } from '../types.js'
+import type {
+  ChannelDefinition,
+  NotificationRuleShape,
+  RenderedNotification,
+  ResolvedSlugs,
+} from '../types.js'
 
 import { attemptAsync } from '../utils/attemptAsync.js'
 import { renderNotification } from '../utils/renderNotification.js'
+import { resolveSlugs } from '../utils/resolveSlugs.js'
+
+type EventRecord = Record<string, unknown>
 
 /**
  * Dispatches notifications for a single rule trigger.
@@ -23,12 +31,7 @@ export function makeProcessNotificationEventTask(
   channels: ChannelDefinition[],
   slugs: Partial<ResolvedSlugs>,
 ): TaskConfig<'processNotificationEvent'> {
-  const resolvedSlugs: ResolvedSlugs = {
-    events: slugs.events ?? 'notification-events',
-    inbox: slugs.inbox ?? 'notification-inbox',
-    rules: slugs.rules ?? 'notification-rules',
-    subscriptions: slugs.subscriptions ?? 'notification-subscriptions',
-  }
+  const resolvedSlugs = resolveSlugs(slugs)
   const { events: eventsSlug, rules: rulesSlug, subscriptions: subsSlug } = resolvedSlugs
 
   return {
@@ -47,39 +50,18 @@ export function makeProcessNotificationEventTask(
         ruleId: string
       }
 
-      const rule = (await payload.findByID({
-        id: ruleId,
-        collection: rulesSlug,
-        depth: 0,
-        disableErrors: true,
-        overrideAccess: true,
-      })) as unknown as NotificationRuleShape | null
-
-      if (!rule?.active) {
+      const rule = await loadActiveRule(payload, rulesSlug, ruleId)
+      if (!rule) {
         return { output: { eventId: '' } }
       }
 
-      // Stable across retries — Payload reuses the same job id on retry.
-      const jobId = (job as { id?: number | string } | undefined)?.id
-      const dedupeKey = jobId != null ? `pne:${String(jobId)}` : undefined
+      const dedupeKey = makeDedupeKey(job)
+      const existing = await findExistingEvent(payload, eventsSlug, dedupeKey)
+      const alreadyDelivered = existing?.deliveredImmediate === true
 
-      // Reuse the event from a previous attempt if this job already ran.
-      let event = null as null | Record<string, unknown>
-      if (dedupeKey) {
-        const { docs } = await payload.find({
-          collection: eventsSlug,
-          depth: 0,
-          limit: 1,
-          overrideAccess: true,
-          where: { dedupeKey: { equals: dedupeKey } },
-        })
-        event = (docs[0] as Record<string, unknown> | undefined) ?? null
-      }
-
-      const alreadyDelivered = event?.deliveredImmediate === true
-
-      if (!event) {
-        event = (await payload.create({
+      const event =
+        existing ??
+        (await payload.create({
           collection: eventsSlug,
           data: {
             contextData,
@@ -90,43 +72,21 @@ export function makeProcessNotificationEventTask(
             trigger: rule.trigger,
           },
           overrideAccess: true,
-        })) as Record<string, unknown>
-      }
+        })) as EventRecord
 
       const eventId = String(event.id)
-
-      const { docs: subscriptions } = await payload.find({
-        collection: subsSlug,
-        depth: 1,
-        overrideAccess: true,
-        pagination: false,
-        where: { and: [{ rule: { equals: ruleId } }, { active: { equals: true } }] },
-      })
-
-      const immediateSubscriptions = subscriptions.filter((s) => s.schedule === 'immediate')
-      const hasPendingDigest = subscriptions.some((s) => s.schedule !== 'immediate')
-
       const settle = (status: 'failed' | 'sent') =>
-        payload.update({
-          id: event.id as number | string,
-          collection: eventsSlug,
-          data: { processedAt: new Date().toISOString(), status },
-          overrideAccess: true,
+        updateEventStatus(payload, eventsSlug, event.id, {
+          processedAt: new Date().toISOString(),
+          status,
         })
 
-      if (immediateSubscriptions.length === 0) {
-        // No immediate work. Digest subscriptions (if any) leave the event
-        // `pending` for `sendNotificationDigest` to pick up. With no
-        // subscriptions at all, nothing will ever process it, so resolve it now.
-        if (!hasPendingDigest) {
-          await settle('sent')
-        }
-        return { output: { eventId } }
-      }
+      const { hasPendingDigest, immediate } = await loadSubscriptions(payload, subsSlug, ruleId)
 
-      if (alreadyDelivered) {
-        // A previous attempt already delivered immediate notifications. Never
-        // re-send; just settle the status (digest subs keep it `pending`).
+      // Nothing to deliver immediately — either there are no immediate
+      // subscriptions, or a prior attempt already delivered them. Digest
+      // subscriptions (if any) keep the event `pending`; otherwise settle now.
+      if (immediate.length === 0 || alreadyDelivered) {
         if (!hasPendingDigest) {
           await settle('sent')
         }
@@ -134,7 +94,6 @@ export function makeProcessNotificationEventTask(
       }
 
       const rendered = await renderNotification(rule, contextData ?? {})
-
       if (rendered.renderFailed) {
         payload.logger.error(
           { eventId, ruleId },
@@ -145,54 +104,18 @@ export function makeProcessNotificationEventTask(
       }
 
       // Claim delivery before sending so a crash + retry cannot double-send.
-      await payload.update({
-        id: event.id as number | string,
-        collection: eventsSlug,
-        data: { deliveredImmediate: true },
-        overrideAccess: true,
+      await updateEventStatus(payload, eventsSlug, event.id, { deliveredImmediate: true })
+
+      const outcome = await deliverImmediate({
+        channels,
+        event: { id: eventId, contextData: contextData ?? {}, trigger: rule.trigger },
+        immediate,
+        logger: payload.logger,
+        rendered,
+        req,
+        ruleId,
+        slugs: resolvedSlugs,
       })
-
-      const eventContext = {
-        id: eventId,
-        contextData: contextData ?? {},
-        trigger: rule.trigger,
-      }
-
-      let anyDeliveryAttempted = false
-      let anyDeliverySucceeded = false
-
-      for (const sub of immediateSubscriptions) {
-        const subChannels = (sub.channels ?? []) as string[]
-
-        for (const channelDef of channels) {
-          if (!subChannels.includes(channelDef.value)) {continue}
-
-          anyDeliveryAttempted = true
-
-          const [err] = await attemptAsync(() =>
-            channelDef.handler({
-              event: eventContext,
-              rendered: {
-                html: rendered.html,
-                subject: rendered.subject,
-                text: rendered.text,
-              },
-              req,
-              slugs: resolvedSlugs,
-              subscription: sub as Record<string, unknown>,
-            }),
-          )
-
-          if (err) {
-            payload.logger.error(
-              { channel: channelDef.value, err, eventId, ruleId },
-              'processNotificationEvent: channel handler failed',
-            )
-          } else {
-            anyDeliverySucceeded = true
-          }
-        }
-      }
 
       if (hasPendingDigest) {
         // Leave the event `pending` so `sendNotificationDigest` still delivers
@@ -201,9 +124,139 @@ export function makeProcessNotificationEventTask(
         return { output: { eventId } }
       }
 
-      await settle(anyDeliveryAttempted && !anyDeliverySucceeded ? 'failed' : 'sent')
+      await settle(outcome.attempted && !outcome.succeeded ? 'failed' : 'sent')
 
       return { output: { eventId } }
     },
   }
+}
+
+/** Loads the rule and returns it only when present and active. */
+async function loadActiveRule(
+  payload: Payload,
+  rulesSlug: string,
+  ruleId: string,
+): Promise<NotificationRuleShape | null> {
+  const rule = (await payload.findByID({
+    id: ruleId,
+    collection: rulesSlug as never,
+    depth: 0,
+    disableErrors: true,
+    overrideAccess: true,
+  })) as unknown as NotificationRuleShape | null
+
+  return rule?.active ? rule : null
+}
+
+/** Stable across retries — Payload reuses the same job id on retry. */
+function makeDedupeKey(job: unknown): string | undefined {
+  const jobId = (job as { id?: number | string } | undefined)?.id
+  return jobId != null ? `pne:${String(jobId)}` : undefined
+}
+
+/** Reuse the event from a previous attempt if this job already ran. */
+async function findExistingEvent(
+  payload: Payload,
+  eventsSlug: string,
+  dedupeKey: string | undefined,
+): Promise<EventRecord | null> {
+  if (!dedupeKey) {
+    return null
+  }
+
+  const { docs } = await payload.find({
+    collection: eventsSlug as never,
+    depth: 0,
+    limit: 1,
+    overrideAccess: true,
+    where: { dedupeKey: { equals: dedupeKey } },
+  })
+
+  return (docs[0] as EventRecord | undefined) ?? null
+}
+
+function updateEventStatus(
+  payload: Payload,
+  eventsSlug: string,
+  id: unknown,
+  data: Record<string, unknown>,
+) {
+  return payload.update({
+    id: id as number | string,
+    collection: eventsSlug as never,
+    data,
+    overrideAccess: true,
+  })
+}
+
+async function loadSubscriptions(
+  payload: Payload,
+  subsSlug: string,
+  ruleId: string,
+): Promise<{ hasPendingDigest: boolean; immediate: EventRecord[] }> {
+  const { docs: subscriptions } = await payload.find({
+    collection: subsSlug as never,
+    depth: 1,
+    overrideAccess: true,
+    pagination: false,
+    where: { and: [{ rule: { equals: ruleId } }, { active: { equals: true } }] },
+  })
+
+  return {
+    hasPendingDigest: subscriptions.some((s) => s.schedule !== 'immediate'),
+    immediate: subscriptions.filter((s) => s.schedule === 'immediate') as EventRecord[],
+  }
+}
+
+type ImmediateDeliveryArgs = {
+  channels: ChannelDefinition[]
+  event: { contextData: Record<string, string>; id: string; trigger: string }
+  immediate: EventRecord[]
+  logger: Payload['logger']
+  rendered: RenderedNotification
+  req: PayloadRequest
+  ruleId: string
+  slugs: ResolvedSlugs
+}
+
+/** Fans the rendered notification out to every matching immediate channel. */
+async function deliverImmediate(
+  args: ImmediateDeliveryArgs,
+): Promise<{ attempted: boolean; succeeded: boolean }> {
+  const { channels, event, immediate, logger, rendered, req, ruleId, slugs } = args
+  let attempted = false
+  let succeeded = false
+
+  for (const sub of immediate) {
+    const subChannels = (sub.channels ?? []) as string[]
+
+    for (const channelDef of channels) {
+      if (!subChannels.includes(channelDef.value)) {
+        continue
+      }
+
+      attempted = true
+
+      const [err] = await attemptAsync(() =>
+        channelDef.handler({
+          event,
+          rendered: { html: rendered.html, subject: rendered.subject, text: rendered.text },
+          req,
+          slugs,
+          subscription: sub,
+        }),
+      )
+
+      if (err) {
+        logger.error(
+          { channel: channelDef.value, err, eventId: event.id, ruleId },
+          'processNotificationEvent: channel handler failed',
+        )
+      } else {
+        succeeded = true
+      }
+    }
+  }
+
+  return { attempted, succeeded }
 }

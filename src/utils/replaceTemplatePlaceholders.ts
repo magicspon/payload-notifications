@@ -21,7 +21,7 @@ export function replaceTemplatePlaceholders(
 }
 
 /** Escape the five characters that are significant in HTML text/attribute context. */
-export function escapeHtml(value: string): string {
+function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

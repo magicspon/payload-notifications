@@ -1,6 +1,6 @@
 {
   "name": "@spon/payload-notifications",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "A generic, channel-based notifications plugin for Payload CMS 3.0 — rules, subscriptions, digests, and pluggable email/webhook/in-app channels.",
   "license": "MIT",
   "type": "module",

@@ -1,218 +1,378 @@
-# Payload Plugin Template
+# @spon/payload-notifications
 
-A template repo to create a [Payload CMS](https://payloadcms.com) plugin.
+A generic, channel-based notifications plugin for [Payload CMS](https://payloadcms.com) 3.0.
 
-Payload is built with a robust infrastructure intended to support Plugins with ease. This provides a simple, modular, and reusable way for developers to extend the core capabilities of Payload.
+Define **rules** in the admin UI (what to send, on which trigger, with optional field conditions), let users create **subscriptions** (which channel, immediate or digest), and deliver through pluggable **channels** — email, webhook, and in-app inbox out of the box, or your own.
 
-To build your own Payload plugin, all you need is:
+The plugin is intentionally decoupled from any particular domain: it has no opinion about _what_ fires a notification. Your app wires its own hooks and calls `queueNotificationRules`, passing a generic `contextData` bag that is substituted into templates.
 
-- An understanding of the basic Payload concepts
-- And some JavaScript/Typescript experience
+---
 
-## Background
+## Features
 
-Here is a short recap on how to integrate plugins with Payload, to learn more visit the [plugin overview page](https://payloadcms.com/docs/plugins/overview).
+- **Channel registry** — email, webhook, and in-app inbox built in; add custom channels with a single object.
+- **Rules + subscriptions** — content editors author rules; users subscribe per channel.
+- **Field conditions** — fire a rule only when a document changes in a specific way (`status` becomes `published`, etc.).
+- **Template placeholders** — `{{token}}` substitution from `contextData` in subjects and Lexical message bodies (HTML-escaped).
+- **Digests** — `immediate`, `daily`, or `weekly` delivery, batched per subscriber.
+- **Caller-wired triggers** — no magic collection watching; you decide when to queue.
+- **Configurable slugs & collection overrides** — rename collections, add fields (e.g. a tenant relationship), or merge admin config.
+- **Idempotent jobs** — retries never double-send.
 
-### How to install a plugin
+---
 
-To install any plugin, simply add it to your payload.config() in the Plugin array.
+## Requirements
+
+- `payload@^3.84.1`
+- `@payloadcms/richtext-lexical` (used for the rule message field and HTML rendering)
+
+---
+
+## Installation
+
+```bash
+pnpm add @spon/payload-notifications
+# or: npm i @spon/payload-notifications / yarn add @spon/payload-notifications
+```
+
+---
+
+## Quick start
 
 ```ts
-import myPlugin from 'my-plugin'
+import { buildConfig } from 'payload'
+import {
+  makeEmailChannel,
+  makeInboxChannel,
+  makeWebhookChannel,
+  makeTriggers,
+  notificationsPlugin,
+} from '@spon/payload-notifications'
 
-export const config = buildConfig({
+export default buildConfig({
+  // ...
   plugins: [
-    // You can pass options to the plugin
-    myPlugin({
-      enabled: true,
+    notificationsPlugin({
+      // The delivery channels available to subscriptions.
+      channels: [
+        // `makeEmailChannel` contributes the `users` relationship field, so
+        // register it before `makeInboxChannel` (which reads that field).
+        makeEmailChannel(async ({ to, subject, html, text }) => {
+          await myMailer.send({ to, subject, html, text })
+        }),
+        makeInboxChannel(),
+        makeWebhookChannel(),
+      ],
+
+      // The events editors can pick when authoring a rule.
+      triggers: [
+        ...makeTriggers('posts'), // posts.created / posts.updated / posts.field_changed
+        { label: 'Custom Event', value: 'custom.event' },
+      ],
     }),
   ],
 })
 ```
 
-### Initialization
+This registers four collections under a **Notifications** admin group:
 
-The initialization process goes in the following order:
+| Collection                  | Default slug                 | Purpose                                              |
+| --------------------------- | ---------------------------- | ---------------------------------------------------- |
+| Notification Rules          | `notification-rules`         | Editor-authored templates (trigger, subject, body).  |
+| Notification Subscriptions  | `notification-subscriptions` | Who gets notified, on which channel, immediate/digest.|
+| Notification Events         | `notification-events`        | Audit log of every fired rule and its delivery state.|
+| Notifications (Inbox)       | `notification-inbox`         | In-app inbox records (used by `makeInboxChannel`).   |
 
-1. Incoming config is validated
-2. **Plugins execute**
-3. Default options are integrated
-4. Sanitization cleans and validates data
-5. Final config gets initialized
+It also registers two jobs: `processNotificationEvent` (queued automatically) and `sendNotificationDigest` (you schedule it — see [Digests](#digests)).
 
-## Building the Plugin
+---
 
-When you build a plugin, you are purely building a feature for your project and then abstracting it outside of the project.
+## Wiring triggers
 
-### Template Files
-
-In the Payload [plugin template](https://github.com/payloadcms/payload/tree/3.x/templates/plugin), you will see a common file structure that is used across all plugins:
-
-1. root folder
-2. /src folder
-3. /dev folder
-
-#### Root
-
-In the root folder, you will see various files that relate to the configuration of the plugin. We set up our environment in a similar manner in Payload core and across other projects, so hopefully these will look familiar:
-
-- **README**.md\* - This contains instructions on how to use the template. When you are ready, update this to contain instructions on how to use your Plugin.
-- **package**.json\* - Contains necessary scripts and dependencies. Overwrite the metadata in this file to describe your Plugin.
-- .**eslint**.config.js - Eslint configuration for reporting on problematic patterns.
-- .**gitignore** - List specific untracked files to omit from Git.
-- .**prettierrc**.json - Configuration for Prettier code formatting.
-- **tsconfig**.json - Configures the compiler options for TypeScript
-- .**swcrc** - Configuration for SWC, a fast compiler that transpiles and bundles TypeScript.
-- **vitest**.config.js - Config file for Vitest, defining how tests are run and how modules are resolved
-
-**IMPORTANT\***: You will need to modify these files.
-
-#### Dev
-
-In the dev folder, you’ll find a basic payload project, created with `npx create-payload-app` and the blank template.
-
-**IMPORTANT**: Make a copy of the `.env.example` file and rename it to `.env`. Update the `DATABASE_URL` to match the database you are using and your plugin name. Update `PAYLOAD_SECRET` to a unique string.
-**You will not be able to run `pnpm/yarn dev` until you have created this `.env` file.**
-
-`myPlugin` has already been added to the `payload.config()` file in this project.
+The plugin never watches your collections for you. Fire a notification by calling `queueNotificationRules` from wherever the event happens — most commonly a collection `afterChange` hook.
 
 ```ts
-plugins: [
-  myPlugin({
-    collections: {
-      posts: true,
-    },
-  }),
-]
-```
+import type { CollectionConfig } from 'payload'
+import { queueNotificationRules } from '@spon/payload-notifications'
 
-Later when you rename the plugin or add additional options, **make sure to update it here**.
-
-You may wish to add collections or expand the test project depending on the purpose of your plugin. Just make sure to keep this dev environment as simplified as possible - users should be able to install your plugin without additional configuration required.
-
-When you’re ready to start development, initiate the project with `pnpm/npm/yarn dev` and pull up [http://localhost:3000](http://localhost:3000) in your browser.
-
-#### Src
-
-Now that we have our environment setup and we have a dev project ready to - it’s time to build the plugin!
-
-**index.ts**
-
-The essence of a Payload plugin is simply to extend the payload config - and that is exactly what we are doing in this file.
-
-```ts
-export const myPlugin =
-  (pluginOptions: MyPluginConfig) =>
-  (config: Config): Config => {
-    // do cool stuff with the config here
-
-    return config
-  }
-```
-
-First, we receive the existing payload config along with any plugin options.
-
-From here, you can extend the config as you wish.
-
-Finally, you return the config and that is it!
-
-##### Spread Syntax
-
-Spread syntax (or the spread operator) is a feature in JavaScript that uses the dot notation **(...)** to spread elements from arrays, strings, or objects into various contexts.
-
-We are going to use spread syntax to allow us to add data to existing arrays without losing the existing data. It is crucial to spread the existing data correctly – else this can cause adverse behavior and conflicts with Payload config and other plugins.
-
-Let’s say you want to build a plugin that adds a new collection:
-
-```ts
-config.collections = [
-  ...(config.collections || []),
-  // Add additional collections here
-]
-```
-
-First we spread the `config.collections` to ensure that we don’t lose the existing collections, then you can add any additional collections just as you would in a regular payload config.
-
-This same logic is applied to other properties like admin, hooks, globals:
-
-```ts
-config.globals = [
-  ...(config.globals || []),
-  // Add additional globals here
-]
-
-config.hooks = {
-  ...(incomingConfig.hooks || {}),
-  // Add additional hooks here
+export const Posts: CollectionConfig = {
+  slug: 'posts',
+  fields: [
+    { name: 'title', type: 'text' },
+    { name: 'status', type: 'text' },
+  ],
+  hooks: {
+    afterChange: [
+      async ({ doc, previousDoc, operation, req }) => {
+        await queueNotificationRules({
+          payload: req.payload,
+          trigger: operation === 'create' ? 'posts.created' : 'posts.updated',
+          // Substituted into `{{token}}` placeholders. Values must be strings.
+          contextData: { title: String(doc.title ?? ''), status: String(doc.status ?? '') },
+          // Pass both docs to enable field-condition evaluation (see below).
+          previousDoc,
+          currentDoc: doc,
+        })
+      },
+    ],
+  },
 }
 ```
 
-Some properties will be slightly different to extend, for instance the onInit property:
+`queueNotificationRules` finds every **active** rule matching the `trigger`, evaluates each rule's field conditions (when `previousDoc` _and_ `currentDoc` are supplied), and queues a `processNotificationEvent` job per matching rule. It is fire-and-forget: failures are logged, never thrown, so your hook is never blocked.
+
+### Options
+
+| Option           | Type                       | Description                                                                 |
+| ---------------- | -------------------------- | --------------------------------------------------------------------------- |
+| `payload`        | `Payload`                  | **Required.** The Payload instance (e.g. `req.payload`).                    |
+| `trigger`        | `string`                   | **Required.** Matches `rule.trigger`.                                       |
+| `contextData`    | `Record<string, string>`   | Token map for `{{placeholder}}` substitution.                               |
+| `previousDoc`    | `Record<string, unknown>`  | Enables `changed` / `not_changed` field conditions.                         |
+| `currentDoc`     | `Record<string, unknown>`  | Required (with `previousDoc`) for field-condition evaluation.               |
+| `contextFilters` | `Where`                    | Extra `where` clause to scope which rules match (e.g. by tenant).           |
+| `slugs`          | `{ rules?: string }`       | Override the rules slug if you customised it.                               |
+
+> **Note:** Running queued jobs requires Payload's job system to be active — via `jobs.autoRun`, a cron hitting `/api/payload-jobs/run`, or calling `payload.jobs.run()` in a worker. See the [Payload Jobs docs](https://payloadcms.com/docs/jobs-queue/overview).
+
+---
+
+## Channels
+
+A channel owns its delivery logic and any subscription fields it needs.
+
+### Email — `makeEmailChannel(sendEmail)`
+
+Sends one email per user in the subscription. Contributes a required `users` relationship field (defaulting to the current admin user) to subscriptions.
 
 ```ts
-import { onInitExtension } from './onInitExtension' // example file
-
-config.onInit = async (payload) => {
-  if (incomingConfig.onInit) await incomingConfig.onInit(payload)
-  // Add additional onInit code by defining an onInitExtension function
-  onInitExtension(pluginOptions, payload)
-}
-```
-
-If you wish to add to the onInit, you must include the **async/await**. We don’t use spread syntax in this case, instead you must await the existing `onInit` before running additional functionality.
-
-In the template, we have stubbed out some addition `onInit` actions that seeds in a document to the `plugin-collection`, you can use this as a base point to add more actions - and if not needed, feel free to delete it.
-
-##### Types.ts
-
-If your plugin has options, you should define and provide types for these options.
-
-```ts
-export type MyPluginConfig = {
-  /**
-   * List of collections to add a custom field
-   */
-  collections?: Partial<Record<CollectionSlug, true>>
-  /**
-   * Disable the plugin
-   */
-  disabled?: boolean
-}
-```
-
-If possible, include JSDoc comments to describe the options and their types. This allows a developer to see details about the options in their editor.
-
-##### Testing
-
-Having a test suite for your plugin is essential to ensure quality and stability. **Vitest** is a fast, modern testing framework that works seamlessly with Vite and supports TypeScript out of the box.
-
-Vitest organizes tests into test suites and cases, similar to other testing frameworks. We recommend creating individual tests based on the expected behavior of your plugin from start to finish.
-
-Writing tests with Vitest is very straightforward, and you can learn more about how it works in the [Vitest documentation.](https://vitest.dev/)
-
-For this template, we stubbed out `int.spec.ts` in the `dev` folder where you can write your tests.
-
-```ts
-describe('Plugin tests', () => {
-  // Create tests to ensure expected behavior from the plugin
-  it('some condition that must be met', () => {
-   // Write your test logic here
-   expect(...)
-  })
+makeEmailChannel(async ({ to, subject, html, text }) => {
+  await myMailer.send({ to, subject, html, text })
 })
 ```
 
-## Best practices
+For digests, all pending items are passed to a single batched email per user.
 
-With this tutorial and the plugin template, you should have everything you need to start building your own plugin.
-In addition to the setup, here are other best practices aim we follow:
+### In-app inbox — `makeInboxChannel(inboxSlugOverride?)`
 
-- **Providing an enable / disable option:** For a better user experience, provide a way to disable the plugin without uninstalling it. This is especially important if your plugin adds additional webpack aliases, this will allow you to still let the webpack run to prevent errors.
-- **Include tests in your GitHub CI workflow**: If you’ve configured tests for your package, integrate them into your workflow to run the tests each time you commit to the plugin repository. Learn more about [how to configure tests into your GitHub CI workflow.](https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs)
-- **Publish your finished plugin to NPM**: The best way to share and allow others to use your plugin once it is complete is to publish an NPM package. This process is straightforward and well documented, find out more [creating and publishing a NPM package here.](https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/).
-- **Add payload-plugin topic tag**: Apply the tag **payload-plugin **to your GitHub repository. This will boost the visibility of your plugin and ensure it gets listed with [existing payload plugins](https://github.com/topics/payload-plugin).
-- **Use [Semantic Versioning](https://semver.org/) (SemVar)** - With the SemVar system you release version numbers that reflect the nature of changes (major, minor, patch). Ensure all major versions reference their Payload compatibility.
+Creates an inbox record per user. It does **not** contribute a `users` field — it reads the one contributed by `makeEmailChannel`, so register email first, or add a `users` field via a [collection override](#collection-overrides). The target collection follows the plugin's resolved `slugs.inbox` automatically; pass `inboxSlugOverride` only to target a different collection.
 
-# Questions
+```ts
+makeInboxChannel()
+```
 
-Please contact [Payload](mailto:dev@payloadcms.com) with any questions about using this plugin template.
+### Webhook — `makeWebhookChannel(options?)`
+
+POSTs the rendered notification to a per-subscription URL. Contributes a `webhookUrl` text field.
+
+```ts
+makeWebhookChannel({
+  allowPrivateHosts: false, // default: reject localhost / private / link-local hosts (SSRF guard)
+  timeoutMs: 10_000,        // default request timeout
+})
+```
+
+Set `allowPrivateHosts: true` only when you intentionally deliver to internal services.
+
+### Custom channels
+
+A channel is just an object implementing `ChannelDefinition`:
+
+```ts
+import type { ChannelDefinition } from '@spon/payload-notifications'
+
+const slackChannel: ChannelDefinition = {
+  label: 'Slack',
+  value: 'slack',
+  // Optional: fields merged into the subscriptions collection.
+  fields: [{ name: 'slackChannelId', type: 'text' }],
+
+  // Called once per matching subscription for immediate delivery.
+  handler: async ({ event, rendered, req, slugs, subscription }) => {
+    await postToSlack(subscription.slackChannelId as string, rendered.text)
+  },
+
+  // Optional: batched digest delivery. Falls back to `handler` per item if omitted.
+  digestHandler: async ({ items, schedule, subscription }) => {
+    await postToSlack(subscription.slackChannelId as string, summarise(items))
+  },
+}
+```
+
+`rendered` is `{ subject, html, text }`. `event` is `{ id, trigger, contextData }`. `slugs` carries the resolved collection slugs.
+
+---
+
+## Field conditions
+
+Triggers created with `supportsFieldConditions: true` (e.g. the `*.field_changed` trigger from `makeTriggers`) reveal a JSON **field conditions** editor on the rule. A rule fires only when its conditions pass against the `previousDoc` / `currentDoc` you pass to `queueNotificationRules`.
+
+```json
+{
+  "logic": "and",
+  "conditions": [
+    { "field": "status", "operator": "equals", "value": "published" },
+    { "field": "status", "operator": "changed" }
+  ]
+}
+```
+
+- `logic`: `"and"` (all must pass) or `"or"` (any).
+- `field` supports dot paths for nested values, e.g. `"author.role"`.
+- Operators: `equals`, `not_equals`, `contains`, `not_contains`, `greater_than`, `less_than`, `is_empty`, `is_not_empty`, `changed`, `not_changed`.
+
+Rules **without** field conditions always fire for their trigger. Want a custom UI instead of raw JSON? Pass `fieldConditionsComponent` (see [Customisation](#customisation)).
+
+You can also evaluate conditions yourself:
+
+```ts
+import { evaluateFieldConditions } from '@spon/payload-notifications'
+
+const matches = evaluateFieldConditions(conditions, previousDoc, currentDoc)
+```
+
+---
+
+## Template placeholders
+
+Rule **subjects** and **message bodies** support `{{token}}` substitution from `contextData`:
+
+- Subject: `New post: {{title}}`
+- Body (Lexical rich text): `Hello {{name}}, "{{title}}" is now {{status}}.`
+
+Missing tokens become empty strings. Values substituted into the HTML body are HTML-escaped to prevent markup/script injection; subjects are plain text.
+
+Render a rule programmatically:
+
+```ts
+import { renderNotification } from '@spon/payload-notifications'
+
+const { subject, html, text, renderFailed } = await renderNotification(rule, contextData)
+```
+
+---
+
+## Digests
+
+Each subscription has a `schedule`: `immediate` (default), `daily`, or `weekly`. Immediate subscriptions are delivered as soon as the event is processed. Digest subscriptions leave the event `pending` for the `sendNotificationDigest` job to batch and deliver.
+
+You schedule the digest job, passing the schedule to run:
+
+```ts
+// Enqueue a daily digest run (then ensure your job queue executes it).
+await payload.jobs.queue({
+  task: 'sendNotificationDigest',
+  input: { schedule: 'daily' }, // or 'weekly'
+})
+```
+
+Wire this to a cron (e.g. via `jobs.autoRun`, an external scheduler, or a serverless cron) so it runs at your chosen time. The job renders each pending event once, batches per subscriber, and marks events `sent` or `failed` exactly once.
+
+---
+
+## Customisation
+
+### Slugs
+
+```ts
+notificationsPlugin({
+  channels: [/* ... */],
+  triggers: [/* ... */],
+  slugs: {
+    rules: 'notif-rules',
+    subscriptions: 'notif-subs',
+    events: 'notif-events',
+    inbox: 'notif-inbox',
+  },
+})
+```
+
+### Collection overrides
+
+Add fields or merge deep config into any plugin collection. Extra `fields` are appended; `hooks` arrays are concatenated with the plugin's; nested objects like `admin`/`access` are shallow-merged (so a partial override won't wipe the base).
+
+```ts
+notificationsPlugin({
+  channels: [/* ... */],
+  triggers: [/* ... */],
+  collections: {
+    notificationRules: {
+      // Add a tenant relationship for multitenancy...
+      fields: [{ name: 'tenant', type: 'relationship', relationTo: 'tenants' }],
+      admin: { group: 'Messaging' },
+    },
+  },
+})
+```
+
+Then scope rules per tenant by passing `contextFilters` to `queueNotificationRules`:
+
+```ts
+await queueNotificationRules({
+  payload: req.payload,
+  trigger: 'posts.created',
+  contextFilters: { tenant: { equals: doc.tenant } },
+})
+```
+
+### Editor features & condition UI
+
+```ts
+notificationsPlugin({
+  channels: [/* ... */],
+  triggers: [/* ... */],
+  // Extra Lexical features for the rule message field.
+  editorFeatures: [/* ...features */],
+  // Path to a custom admin component for the field-conditions editor.
+  fieldConditionsComponent: '/components/FieldConditionsBuilder#FieldConditionsBuilder',
+})
+```
+
+### Other options
+
+| Option     | Type      | Description                                          |
+| ---------- | --------- | ---------------------------------------------------- |
+| `disabled` | `boolean` | Register collections but skip jobs (e.g. for builds).|
+
+---
+
+## Access control & user roles
+
+The events and inbox collections gate `delete` (and some reads) on an admin role, checking `req.user.role === 'admin'`. If your `users` collection has no `role` field these checks simply deny non-owners — add a `role` field if you want admins to manage these records. Rules and subscriptions require any authenticated user.
+
+---
+
+## Programmatic API
+
+| Export                     | Description                                                            |
+| -------------------------- | --------------------------------------------------------------------- |
+| `notificationsPlugin`      | The plugin factory.                                                   |
+| `makeEmailChannel`         | Built-in email channel factory.                                       |
+| `makeWebhookChannel`       | Built-in webhook channel factory (with SSRF guard).                   |
+| `makeInboxChannel`         | Built-in in-app inbox channel factory.                                |
+| `makeTriggers`             | Generates `created` / `updated` / `field_changed` triggers for a slug.|
+| `queueNotificationRules`   | Finds matching rules and queues delivery jobs.                        |
+| `renderNotification`       | Renders a rule's subject/body against `contextData`.                  |
+| `evaluateFieldConditions`  | Evaluates a field-conditions object against two docs.                 |
+
+Types: `NotificationsPluginConfig`, `ChannelDefinition`, `TriggerDefinition`, `RenderedNotification`.
+
+---
+
+## Development
+
+```bash
+pnpm install
+pnpm dev            # run the dev Payload app (./dev)
+pnpm test:unit      # vitest unit tests
+pnpm test:int       # integration tests (SQLite in-memory)
+pnpm test           # both
+pnpm typecheck
+pnpm lint
+```
+
+---
+
+## License
+
+MIT

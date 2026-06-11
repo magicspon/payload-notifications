@@ -2,7 +2,7 @@
 
 import payloadEsLintConfig from '@payloadcms/eslint-config'
 
-export const defaultESLintIgnores = [
+const defaultESLintIgnores = [
   '**/.temp',
   '**/.*', // ignore all dotfiles
   '**/.git',

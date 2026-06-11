@@ -1,7 +1,7 @@
 {
   "name": "@spon/payload-notifications",
-  "version": "1.0.0",
-  "description": "A blank template to get started with Payload 3.0",
+  "version": "0.0.0",
+  "description": "A generic, channel-based notifications plugin for Payload CMS 3.0 — rules, subscriptions, digests, and pluggable email/webhook/in-app channels.",
   "license": "MIT",
   "type": "module",
   "exports": {
@@ -38,23 +38,23 @@
     "dev:payload": "cross-env PAYLOAD_CONFIG_PATH=./dev/payload.config.ts payload",
     "generate:importmap": "pnpm dev:generate-importmap",
     "generate:types": "pnpm dev:generate-types",
+    "dev:build": "next build dev",
+    "dev:start": "next start dev -p 3001",
     "lint": "eslint",
     "lint:fix": "eslint ./src --fix",
-    "test": "pnpm test:int && pnpm test:e2e",
+    "test": "pnpm test:unit && pnpm test:int",
     "test:e2e": "playwright test",
-    "test:int": "vitest"
+    "test:unit": "vitest --config vitest.config.js",
+    "test:int": "vitest --config vitest.integration.config.js",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^3.2.0",
-    "@payloadcms/db-mongodb": "3.84.1",
-    "@payloadcms/db-postgres": "3.84.1",
-    "@payloadcms/db-sqlite": "3.84.1",
+    "@changesets/cli": "^2.31.0",
+    "@payloadcms/db-sqlite": "^3.85.1",
     "@payloadcms/eslint-config": "3.28.0",
     "@payloadcms/next": "3.84.1",
     "@payloadcms/richtext-lexical": "3.84.1",
-    "@payloadcms/ui": "3.84.1",
     "@playwright/test": "1.58.2",
-    "@swc-node/register": "1.10.9",
     "@swc/cli": "0.6.0",
     "@types/node": "22.19.9",
     "@types/react": "19.2.14",
@@ -62,19 +62,14 @@
     "copyfiles": "2.4.1",
     "cross-env": "^7.0.3",
     "eslint": "^9.23.0",
-    "eslint-config-next": "16.2.6",
     "graphql": "^16.8.1",
-    "mongodb-memory-server": "10.1.4",
     "next": "16.2.6",
-    "open": "^10.1.0",
     "payload": "3.84.1",
     "prettier": "^3.4.2",
-    "qs-esm": "8.0.1",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "rimraf": "3.0.2",
     "sharp": "0.34.2",
-    "sort-package-json": "^2.10.0",
     "typescript": "5.7.3",
     "vite-tsconfig-paths": "6.0.5",
     "vitest": "4.0.18"
@@ -84,8 +79,9 @@
   },
   "engines": {
     "node": "^18.20.2 || >=20.9.0",
-    "pnpm": "^9 || ^10"
+    "pnpm": "^11"
   },
+  "packageManager": "pnpm@11.5.3",
   "publishConfig": {
     "exports": {
       ".": {
@@ -107,13 +103,5 @@
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "sharp",
-      "esbuild",
-      "unrs-resolver"
-    ]
-  },
-  "registry": "https://registry.npmjs.org/",
-  "dependencies": {}
+  "registry": "https://registry.npmjs.org/"
 }

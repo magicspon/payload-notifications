@@ -42,6 +42,7 @@
     "dev:start": "next start dev -p 3001",
     "lint": "eslint",
     "lint:fix": "eslint ./src --fix",
+    "release": "changeset publish",
     "test": "pnpm test:unit && pnpm test:int",
     "test:e2e": "playwright test",
     "test:unit": "vitest --config vitest.config.js",
